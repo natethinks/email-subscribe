@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/boltdb/bolt"
@@ -23,7 +26,7 @@ type Email struct {
 }
 
 type SimpleEmail struct {
-	ID    int    `json:"id"`
+	ID    string `json:"id"`
 	Email string `json:"email"`
 }
 
@@ -68,17 +71,38 @@ func main() {
 func GetEmails(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "Get Emails")
 
+	var buffer bytes.Buffer
+
+	db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket([]byte("Emails")).Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			s := fmt.Sprintf("key=%s, value=%s\n", k, v)
+			buffer.WriteString(s)
+		}
+		return nil
+	})
+
+	fmt.Fprintln(w, buffer.String())
+	defer r.Body.Close()
 	return
 }
 
 // PostEmail submits a new email to the store
 func PostEmail(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintln(w, "PostEmail!")
-	decoder := json.NewDecoder(r.Body)
-	var e SimpleEmail
-	err := decoder.Decode(&e.Email)
+
+	requestDump, err := httputil.DumpRequest(r, true)
 	if err != nil {
-		panic(err)
+		fmt.Println(err)
+	}
+	fmt.Println(string(requestDump))
+
+	var e SimpleEmail
+	decoder := json.NewDecoder(r.Body)
+	err = decoder.Decode(&e)
+	if err != nil {
+		w.WriteHeader(http.StatusNotImplemented)
+		defer panic(err)
+		return
 	}
 	defer r.Body.Close()
 	fmt.Fprintln(w, e)
@@ -86,11 +110,12 @@ func PostEmail(w http.ResponseWriter, r *http.Request) {
 	db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("Emails"))
 		id, _ := b.NextSequence()
-		e.ID = int(id)
-		err := b.Put([]byte("answer"), []byte("42"))
+		e.ID = strconv.Itoa(int(id))
+		err := b.Put([]byte(e.ID), []byte(e.Email))
 		return err
 	})
 
+	w.WriteHeader(http.StatusOK)
 	return
 }
 
@@ -123,5 +148,15 @@ func allowedMethods(methods []string, next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Methods", commaify(methods))
 
 		next.ServeHTTP(w, r)
+	})
+}
+
+func List(bucket string) {
+	db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket([]byte(bucket)).Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			fmt.Printf("key=%s, value=%s\n", k, v)
+		}
+		return nil
 	})
 }

@@ -102,7 +102,7 @@ func GetEmails(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
-	respond.JSON(w, buffer.String())
+	fmt.Sprintln(w, buffer.String())
 	defer r.Body.Close()
 	return
 }

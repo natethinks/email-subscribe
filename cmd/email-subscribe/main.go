@@ -3,20 +3,25 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
-	"net/http/httputil"
 	"os"
 	"strconv"
 	"time"
 
+	"github.com/badoux/checkmail"
 	"github.com/boltdb/bolt"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
+	"github.com/natethinks/email-subscribe/internal/respond"
+	"github.com/natethinks/email-subscribe/internal/utility"
 )
 
-var db *bolt.DB
+var (
+	db *bolt.DB
+)
 
 type Email struct {
 	Name       string    `json:"name"`
@@ -32,6 +37,11 @@ type SimpleEmail struct {
 
 func main() {
 
+	// flags
+	delete := flag.Bool("D", false, "clear all entries from db")
+	//clean := flag.Bool("C", false, "clean all partial entries from the db")
+	flag.Parse()
+
 	var err error
 
 	db, err = bolt.Open("my.db", 0600, nil)
@@ -39,6 +49,16 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
+
+	if *delete {
+		if c := utility.AskForConfirmation("Do you really want to delete the entire database?"); c {
+			fmt.Println("You absolute mad man!")
+			fmt.Println("Store has been deleted and will be recreated")
+			db.Update(func(tx *bolt.Tx) error {
+				return tx.DeleteBucket([]byte("Emails"))
+			})
+		}
+	}
 
 	db.Update(func(tx *bolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists([]byte("Emails"))
@@ -82,7 +102,7 @@ func GetEmails(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
-	fmt.Fprintln(w, buffer.String())
+	respond.JSON(w, buffer.String())
 	defer r.Body.Close()
 	return
 }
@@ -90,22 +110,32 @@ func GetEmails(w http.ResponseWriter, r *http.Request) {
 // PostEmail submits a new email to the store
 func PostEmail(w http.ResponseWriter, r *http.Request) {
 
-	requestDump, err := httputil.DumpRequest(r, true)
-	if err != nil {
-		fmt.Println(err)
-	}
-	fmt.Println(string(requestDump))
-
 	var e SimpleEmail
 	decoder := json.NewDecoder(r.Body)
-	err = decoder.Decode(&e)
+	err := decoder.Decode(&e)
 	if err != nil {
-		w.WriteHeader(http.StatusNotImplemented)
-		defer panic(err)
+		panic(err)
+		w.WriteHeader(http.StatusBadRequest)
+		respond.JSON(w, err)
 		return
 	}
 	defer r.Body.Close()
-	fmt.Fprintln(w, e)
+
+	err = checkmail.ValidateFormat(e.Email)
+	if err != nil {
+		log.Println(err)
+		w.WriteHeader(http.StatusBadRequest)
+		respond.JSON(w, err)
+		return
+	}
+
+	err = checkmail.ValidateHost(e.Email)
+	if err != nil {
+		log.Println(err)
+		w.WriteHeader(http.StatusBadRequest)
+		respond.JSON(w, err)
+		return
+	}
 
 	db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("Emails"))
@@ -155,7 +185,7 @@ func List(bucket string) {
 	db.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket([]byte(bucket)).Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
-			fmt.Printf("key=%s, value=%s\n", k, v)
+			log.Printf("key=%s, value=%s\n", k, v)
 		}
 		return nil
 	})
